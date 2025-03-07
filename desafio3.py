@@ -1,3 +1,4 @@
+from curses import wrapper
 from datetime import datetime
 from abc import ABC, abstractmethod
 import textwrap
@@ -19,6 +20,15 @@ class PessoaFisica(Cliente):
         self.cpf = cpf
         self.nome = nome
         self.data_nascimento = datetime.strptime(data_nascimento, "%d/%m/%Y")
+
+def registrar_transacao(func):
+    def wrapper(*args, **kwargs):
+        tipo_transacao = func.__name__
+        data_hora = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        print(f"[{data_hora}] Transação realizada: {tipo_transacao}")
+
+        return func(*args, **kwargs)
+    return wrapper
 
 class Conta:
     def __init__(self, numero, cliente):
@@ -52,9 +62,10 @@ class Conta:
     def historico(self):
         return self._historico
     
+    @registrar_transacao
     def sacar(self, valor):
         saldo = self.saldo
-        excedeu_saldo =  valor > saldo
+        excedeu_saldo = valor > saldo
 
         if excedeu_saldo:
             print("@@@ Operação falhou. Você não tem saldo suficiente!")
@@ -68,14 +79,36 @@ class Conta:
             print("Operação inválida!")
         return False
     
+    @registrar_transacao
     def depositar(self, valor):
         if valor > 0:
+            self._saldo += valor  # Corrigido para adicionar ao saldo
             print("Valor depositado com sucesso")
+            return True
         else:
             print("Digite um valor válido!")
             return False
         
-        return True
+class ContaIterador:
+    def __init__(self, contas):
+        self.contas = contas  # Corrigido para atribuição correta
+        self.index = 0
+
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        if self.index < len(self.contas):
+            conta = self.contas[self.index]
+            self.index += 1
+            return {
+                "numero": conta.numero,
+                "saldo": conta.saldo,
+                "agencia": conta.agencia,
+                "titular": conta.cliente.nome
+            }
+        else:
+            raise StopIteration
     
 class ContaCorrente(Conta):
     def __init__(self, numero, cliente, limite=500, limite_saques=3):
@@ -84,26 +117,27 @@ class ContaCorrente(Conta):
         self.limite_saques = limite_saques
 
     def sacar(self, valor):
-            numero_saques = len(
-                [transacao for transacao in self.historico.transacoes if transacao["tipo"] == Saque.__name__]
-            )
+        numero_saques = len(
+            [transacao for transacao in self.historico.transacoes if transacao["tipo"] == "Saque"]
+        )
 
-            excedeu_limite = valor > self.limite
-            excedeu_saques = numero_saques >= self.limite_saques
+        excedeu_limite = valor > self.limite
+        excedeu_saques = numero_saques >= self.limite_saques
 
-            if excedeu_limite:
-                print("Você só pode sacar 500 reais por vez")
-            elif excedeu_saques:
-                print("Você alcancou a quantidade máxima de saques realizados por dia.")
-            else:
-                return super().sacar(valor)
-            
-            return False
+        if excedeu_limite:
+            print("Você só pode sacar 500 reais por vez")
+        elif excedeu_saques:
+            print("Você alcançou a quantidade máxima de saques realizados por dia.")
+        else:
+            return super().sacar(valor)
+        
+        return False
+
     def __str__(self):
-            return f"""\
-                Agêncica:\t{self.agencia}
-                C/C:\t\t{self.numero}
-                Titular:\t{self.cliente.nome}"""
+        return f"""\
+            Agência:\t{self.agencia}
+            C/C:\t\t{self.numero}
+            Titular:\t{self.cliente.nome}"""
         
 class Historico:
     def __init__(self):
@@ -118,10 +152,14 @@ class Historico:
             {
                 "tipo": transacao.__class__.__name__,
                 "valor": transacao.valor,
-                "data": datetime.now().strftime
-                ("%d-%m-%Y %H:%M:%S")
+                "data": datetime.now().strftime("%d-%m-%Y %H:%M:%S")  # Corrigido
             }
         )
+
+    def gerar_transacoes(self, tipo=None):
+        for transacao in self.transacoes:
+            if tipo is None or transacao["tipo"] == tipo:
+                yield transacao
 
 class Transacao(ABC):
     @property
@@ -130,9 +168,11 @@ class Transacao(ABC):
         pass
 
     @classmethod
+    @registrar_transacao
     @abstractmethod
-    def registrar(self, conta):
+    def registrar(cls, conta):
         pass
+
 class Saque(Transacao):
     def __init__(self, valor):
         self._valor = valor 
@@ -160,6 +200,7 @@ class Deposito(Transacao):
 
         if sucesso_transacao:
             conta.historico.adicionar_transacao(self)
+
 def menu():
     menu = """\n
 ====================== MENU =======================
@@ -181,18 +222,21 @@ def recuperar_conta_cliente(cliente):
     if not cliente.contas:
         print("\n@@@ Cliente não possui conta! @@@")
         return 
-    # FIXME: não permite o cliente escolher conta
-    return cliente.contas[0]
+    return cliente.contas[0]  # Corrigido para retornar a conta corretamente
 
 def depositar(clientes):
     cpf = input("Informe o cpf do cliente: ")
     cliente = filtrar_cliente(cpf, clientes)
 
     if not cliente:
-        print("\n @@@ Cliente não encontrado! @@@")
+        print("\n@@@ Cliente não encontrado! @@@")
         return
     
     valor = float(input("Informe o valor do depósito: "))
+    if valor <= 0:
+        print("Valor deve ser maior que zero.")
+        return
+
     transacao = Deposito(valor)
     conta = recuperar_conta_cliente(cliente)
     if not conta:
@@ -207,7 +251,12 @@ def sacar(clientes):
     if not cliente:
         print("\nCliente não encontrado@@@")
         return
+    
     valor = float(input("Informe o valor do saque: "))
+    if valor <= 0:
+        print("Valor deve ser maior que zero.")
+        return
+
     transacao = Saque(valor)
 
     conta = recuperar_conta_cliente(cliente)
@@ -224,12 +273,18 @@ def exibir_extrato(clientes):
         print("\n@@@ Cliente não encontrado @@@")
         return
     
-    conta = recuperar_conta_cliente
+    conta = recuperar_conta_cliente(cliente)  # Corrigido
     if not conta:
         return
     
+    tipo_transacao = input("Informe o tipo de transação (Saque/Deposito) para filtrar ou pressione\nenter para mostrar todas as transações")
+    
     print("\n========================== EXTRATO ==========================")
-    transacoes = conta.historico.transacoes
+
+    if tipo_transacao:
+        transacoes = conta.historico.gerar_transacoes(tipo_transacao.capitalize())
+    else:
+        transacoes = conta.historico.gerar_transacoes()
 
     extrato = ""
     if not transacoes:
@@ -257,8 +312,6 @@ def criar_cliente(clientes):
     clientes.append(cliente)
     print("\nCliente criado com sucesso!")
 
-
-
 def criar_conta(numero_conta, clientes, contas):
     cpf = input("Informe o cpf do cliente: ")
     cliente = filtrar_cliente(cpf, clientes)
@@ -277,7 +330,6 @@ def listar_contas(contas):
     for conta in contas:
         print("=" * 100)
         print(textwrap.dedent(str(conta)))
-
 
 def main():
     clientes = []
